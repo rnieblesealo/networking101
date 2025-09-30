@@ -1,0 +1,16 @@
+BasedOnStyle: LLVM
+ColumnLimit: 90
+BreakBeforeBraces: Allman
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+BreakConstructorInitializers: BeforeComma
+BinPackArguments: false
+BinPackParameters: false
+CommentPragmas: '^\.'
+ReflowComments: IndentOnly
+IncludeCategories:
+  - Regex:           '^<.*'
+    Priority:        2
+  - Regex:           '^".*"'
+    Priority:        1
+SortIncludes:    true

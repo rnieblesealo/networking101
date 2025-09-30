@@ -1,0 +1,96 @@
+# GPT-generated
+
+# ---- Build directories -------------------------------------------------------
+/build/
+/out/
+/bin/
+/dist/
+/obj/
+/Debug/
+/Release/
+/cmake-build-*/
+
+# ---- C/C++ artifacts ---------------------------------------------------------
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.exp
+*.pdb
+*.ilk
+*.idb
+*.rsp
+
+# Dependency files (from -MMD -MP)
+*.d
+
+# Precompiled headers
+*.gch
+*.pch
+
+# Static analysis / sanitizers
+*.asan.*
+*.tsan.*
+*.ubsan.*
+
+# ---- CMake / Make ------------------------------------------------------------
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+CTestTestfile.cmake
+cmake_install.cmake
+_install/
+install_manifest.txt
+Makefile
+# If you want to commit the compile DB for clangd, remove the next line:
+compile_commands.json
+
+# ---- Raylib / macOS debug bundles -------------------------------------------
+*.dSYM/
+*.DS_Store
+
+# ---- IDE / Editor junk -------------------------------------------------------
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*.swm
+*.swn
+*.bak
+*.tmp
+*.log
+.tags
+.vs/
+*.VC.db
+*.VC.opendb
+
+# ---- OS-specific -------------------------------------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+._*
+.AppleDouble
+
+# ---- Ccache (optional) -------------------------------------------------------
+.ccache/
+
+# ---- Project-specific --------------------------------------------------------
+# Keep the assets directory, but ignore generated/big files inside it
+assets/generated/**
+!assets/.keep
+
+# --- Patched by me ------------------------------------------------------------
+
+# Caches
+.cache/
+**/.cache/
