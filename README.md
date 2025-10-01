@@ -40,7 +40,20 @@ This is a bunch of networking code I wrote for a workshop I will (hopefully) tea
     - Put in host order; use unsigned types if possible (is this a must?)
     - Memcpy everything; figure out offsets
     - Send all!
+- Whenever something modifies global state, mutex lock that ho!
+- File descriptor/socket watchlists (the `select()` API):
+    - Even though we might store a bunch of socket fds, when we poll those sockets, we use CPU. Some sockets may be inactive; this would waste CPU. It'd be useful to know which sockets are "awake" so we only poll those.
+    - Enter `fd_set` & `select()` API!
+        - `fd_set` is a bitmask that encodes file descriptors we care about observing 
+        - `select()` updates that bitmask by masking away *inactive* sockets
+        - We can poll that bitmask so we know what sockets are active, and then we won't have to waste CPU looking at sleepy sockets
+        - We can set a timeout for when a socket doesn't respond using `struct timeval`
+        - :D
 
 # Questions
 
 - Why is it ok to modify global state without thread protection?
+
+# Notes
+
+- Anytime we modify global state we must lock the current thread that is making those mods; this avoids thread fuckery

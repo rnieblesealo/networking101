@@ -3,14 +3,19 @@
 // ==============================================================================
 
 #include "w-helper.h"
+#include <arpa/inet.h>
+#include <errno.h>
 #include <pthread.h>
 #include <raylib.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 // ==============================================================================
 // CONFIGURATION
@@ -38,6 +43,7 @@
 #define RGBA_CHANNEL_COUNT 4      // Amnt. of channels in an RGBA image
 #define WINDOW_W 500
 #define WINDOW_H 500
+#define SELECT_TIMEOUT 200000
 
 // FIXME: Boundscheck these!
 #define MIN_PLAYER_X_POS 100
@@ -64,7 +70,7 @@ typedef struct Player
 {
   uint32_t  ip;
   uint32_t  player_id;
-  char      nametag[MAX_TAG_LEN + 1]; // +1 for null terminator
+  char      nametag[MAX_NAMETAG_LEN + 1]; // +1 for null terminator
   int       pos_x, pos_y;
   uint8_t  *avatar;   // Byte array containing image pixels (RGBA32)
   uint32_t  w, h, ch; // Width, height and channel count
@@ -266,7 +272,12 @@ static bool set_player_avatar(Player        *target_player,
 // CLIENT HANDLING
 // ==============================================================================
 
-// NOTE: Resume here!
+/**
+ * @brief Receive registration request packet for a new player and register that player
+ * @param cfd The file descriptor via which the request will arrive
+ * @param peer_ip_net The IP address of the new player's client under which they'll be registered
+ * @returns true if registration successful, false otherwise
+ */
 static bool handle_register(int cfd, uint32_t peer_ip_net)
 {
   uint8_t opcode;
@@ -469,15 +480,230 @@ static bool handle_register(int cfd, uint32_t peer_ip_net)
 typedef struct
 {
   int listen_fd;
-} NetArgs; // FIXME: This is probably not necessary
+} NetArgs; // FIXME: This is probably not necessary; why do we pack it like this? Do we receive this in generic form?
 
-static void  add_client_fd_locked(int fd);
-static void  remove_client_index_locked(size_t idx);
-static void *net_thread_main(void *arg_);
+/**
+ * @brief Add a new client to the clients table
+ * @note This should take place in a thread locked context
+ * @param fd The file descriptor of that client's socket
+ */
+static void add_client_fd_locked(int fd)
+{
+  // Add new client if we have room for them
+  if (g_client_count < MAX_CLIENTS)
+  {
+    size_t new_client_index        = g_client_count + 1;
+    g_client_fds[new_client_index] = fd;
+  }
+
+  // FIXME: Shouldn't this return some kind of error code?
+}
+
+/**
+ * @brief Removes a client from the clients table
+ * @param idx The index of the client we wish to remove
+ * @note Should take place in thread locked context
+ */
+static void remove_client_index_locked(size_t idx)
+{
+  // Ensure we're clearing a client within bounds
+  if (idx >= g_client_count)
+  {
+    return;
+  }
+
+  // Remove by replacing n client with one at the end
+  // Clever :)
+  // Maybe
+  // I think...
+  g_client_fds[idx] = g_client_fds[g_client_count - 1];
+  g_client_count--;
+}
+
+// TODO: Dissect this a little more
+// This is fucking crazy
+static void *net_thread_main(void *arg_)
+{
+  NetArgs *args = (NetArgs *)arg_;
+
+  int listener_fd = args->listen_fd;
+
+  free(args);
+
+  // Network handling loop
+  while (g_running)
+  {
+    // Create socket set bitmask
+    fd_set rfds;
+    FD_ZERO(&rfds); // Initialize to 0; no sockets added yet
+    int maxfd =
+        listener_fd; // This will be largest file descriptor in the set; every fd below it will be considered "valid"; in-use
+
+    pthread_mutex_lock(&g_lock); // Requires glob state mod, should lock!
+
+    for (size_t i = 0; i < g_client_count; ++i)
+    {
+      FD_SET(g_client_fds[i], &rfds);
+
+      /*
+       * If this new socket's fd is larger than the one we initially assigned,
+       * then make this new one the maxfd
+       *
+       * This ensures that all sockets in the client fds are valid, and also our listener
+       */
+      if (g_client_fds[i] > maxfd)
+      {
+        maxfd = g_client_fds[i];
+      }
+    }
+
+    pthread_mutex_unlock(&g_lock);
+
+    // Mask away sockets we want to ignore
+    struct timeval select_timeout = {.tv_sec = 0, .tv_usec = SELECT_TIMEOUT};
+    int            ready          = select(maxfd + 1, &rfds, NULL, NULL, &select_timeout);
+    if (ready < 0)
+    {
+      // Retry if we were interrupted by async bullshit
+      if (errno == EINTR)
+      {
+        continue;
+      }
+
+      perror("server: select");
+
+      break;
+    }
+
+    // Ensure this file descriptor is set in the socket watchlist
+    // If so, poll it!
+    if (FD_ISSET(listener_fd, &rfds))
+    {
+      // Note that we assume client's address to be IPv4
+
+      struct sockaddr_in client_addr;
+      socklen_t          client_addrlen = sizeof client_addr;
+
+      // FIXME: Was sockaddr the best practice here?
+      int client_sockfd =
+          accept(listener_fd, (struct sockaddr *)&client_addr, &client_addrlen);
+
+      // If client did connect, register their file desc.
+      if (client_sockfd >= 0)
+      {
+        pthread_mutex_lock(&g_lock);
+
+        add_client_fd_locked(client_sockfd);
+
+        pthread_mutex_unlock(&g_lock);
+      }
+    }
+
+    pthread_mutex_lock(&g_lock);
+
+    // Go over all client connections
+    // Register new players for clients that don't have one
+
+    // FIXME: Cursed for loop...
+    for (size_t i = 0; i < g_client_count;)
+    {
+      int  client_fd = g_client_fds[i];
+      bool advance   = true;
+
+      // Again, if this file descriptor is awake, move forward with it!
+      if (FD_ISSET(client_fd, &rfds))
+      {
+        struct sockaddr_in peer_addr;
+        socklen_t          peer_addrlen = sizeof peer_addr;
+
+        if (getpeername(client_fd, (struct sockaddr *)&peer_addr, &peer_addrlen) < 0)
+        {
+          // FIXME: A lil spaghetti might be boiling here cousin...
+          goto drop_locked;
+        }
+
+        uint32_t peer_ip = peer_addr.sin_addr.s_addr;
+
+        pthread_mutex_unlock(&g_lock); // FIXME: Why the fuck is this here?
+
+        // Try and register a new player
+        bool did_register = handle_register(client_fd, peer_ip);
+
+        // If failed to register, this player's client is probably not connected... FIXME: WHAT???
+        // Find the player registered under this IP and mark them as disconnected
+
+        if (!did_register)
+        {
+          pthread_mutex_lock(&g_lock);
+
+          Player *client_player = find_player_by_ip(peer_ip);
+          if (client_player)
+          {
+            client_player->connected = false;
+
+            goto drop_locked;
+          }
+        }
+
+        // If we did manage to register, keep that client's connection alive by peeking (receive 1 byte but don't consume it)!
+
+        // FIXME: But if we keep the connection alive, won't that recreate the new player every time we poll its client's socket?
+
+        else
+        {
+          char tmp;
+
+          // PEEK = don't consume from buffer; DONTWAIT = make this non-blocking
+          ssize_t nbytes = recv(client_fd, &tmp, 1, MSG_PEEK | MSG_DONTWAIT);
+
+          pthread_mutex_lock(&g_lock);
+
+          // If peek didn't receive anything, then we probably need to drop this
+          // FIXME: Shouldn't we add a -1 case here as well?
+          if (nbytes == 0)
+          {
+            goto drop_locked;
+          }
+        }
+
+        goto next_locked;
+
+      drop_locked:
+        close(client_fd);
+        remove_client_index_locked(i);
+        advance = false;
+      next_locked:;
+      }
+
+      if (advance)
+      {
+        i++;
+      }
+    }
+  }
+
+  // Gracefully shut down by notifying clients
+  pthread_mutex_lock(&g_lock);
+
+  uint8_t bye = OPC_SHUTDOWN;
+  for (size_t i = 0; i < g_client_count; ++i)
+  {
+    sendall(g_client_fds[i], &bye, 1);
+    close(g_client_fds[i]);
+  }
+
+  g_client_count = 0;
+
+  pthread_mutex_unlock(&g_lock);
+
+  return NULL;
+}
 
 // ==============================================================================
 // LISTENER HANDLING
 // ==============================================================================
+
+// TODO: Resume here
 
 static int make_listener(const char *bind_ip, uint16_t port);
 

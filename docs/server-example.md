@@ -235,6 +235,8 @@ static void* net_thread_main(void *arg_) {
       }
     }
 
+    // What the fuck is all this
+
     pthread_mutex_lock(&g_lock);
     for (size_t i=0; i<g_client_count; ) {
       int cfd = g_client_fds[i]; bool advance = true;
@@ -279,6 +281,8 @@ static void* net_thread_main(void *arg_) {
 
   return NULL;
 }
+
+// -------------- RESUME HERE !!! ------------------
 
 // ---------- Listener socket setup ----------
 static int make_listener(const char *bind_ip, uint16_t port) {
