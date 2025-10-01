@@ -176,6 +176,9 @@ static bool handle_register(int cfd, uint32_t peer_ip_net) {
   pthread_mutex_lock(&g_lock);
   Player *p = ensure_player(peer_ip_net);
   if (!p) { pthread_mutex_unlock(&g_lock); free(tag_buf); free(avatar); return false; }
+
+    // --- RESUME HERE ---
+
   size_t cpy = tag_len; if (cpy > MAX_TAG_LEN) cpy = MAX_TAG_LEN;
   memcpy(p->tag, tag_buf, cpy); p->tag[cpy] = '\0';
   set_player_avatar(p, avatar, w, h, ch);

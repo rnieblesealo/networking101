@@ -34,3 +34,13 @@ This is a bunch of networking code I wrote for a workshop I will (hopefully) tea
     - Use!
 - All-or-error semantics = Either return a success value or an error code
 - Partial progress semantics = Either return a success value or a partial progress value, which can potentially be an errcode
+- Assembling custom packet:
+    - Determine structure
+    - Determine size from structure types 
+    - Put in host order; use unsigned types if possible (is this a must?)
+    - Memcpy everything; figure out offsets
+    - Send all!
+
+# Questions
+
+- Why is it ok to modify global state without thread protection?

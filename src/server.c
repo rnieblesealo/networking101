@@ -16,14 +16,26 @@
 // CONFIGURATION
 // ==============================================================================
 
+#define AVATAR_CHANNEL_COUNT 4 // We always want avatars to end up as RGBA
+#define MAX_AVATAR_W 8         // We expect an 8x8 sprite
+#define MAX_AVATAR_H 8
 #define MAX_CLIENTS 32          // Not too many!
 #define MAX_PLAYERS MAX_CLIENTS // Alias for readability
-#define MAX_TAG_LEN 31
-#define MAX_AVATAR_W 8 // We expect an 8x8 sprite
-#define MAX_AVATAR_H 8
-#define AVATAR_CHANNEL_COUNT 4 // We always want avatars to end up as RGBA
-#define RGBA_CHANNEL_COUNT 4   // Amnt. of channels in an RGBA image
-#define RGB_CHANNEL_COUNT 3    // Amnt. of channels in an RGB image, no alpha data
+#define MAX_STR_LEN 1024
+#define MAX_NAMETAG_LEN 31
+#define EXPECTED_NETWORK_ORDER_NAMETAG_LEN 2
+#define EXPECTED_NETWORK_ORDER_AVATAR_WIDTH 4
+#define EXPECTED_NETWORK_ORDER_AVATAR_HEIGHT 4
+#define EXPECTED_NETWORK_ORDER_AVATAR_CHANNELS 1
+#define EXPECTED_NETWORK_ORDER_AVATAR_SIZE 4
+#define ACK_OPCODE_SIZE 1
+#define ACK_OPCODE_OFFSET 0
+#define ACK_ID_OFFSET 1
+#define ACK_POS_X_OFFSET 5
+#define ACK_POS_Y_OFFSET 9
+#define GRAYSCALE_CHANNEL_COUNT 1 // Amnt. of channels in grayscale image
+#define RGB_CHANNEL_COUNT 3       // Amnt. of channels in an RGB image, no alpha data
+#define RGBA_CHANNEL_COUNT 4      // Amnt. of channels in an RGBA image
 #define WINDOW_W 500
 #define WINDOW_H 500
 
@@ -50,15 +62,15 @@ enum
 
 typedef struct Player
 {
-  uint32_t ip;
-  uint32_t player_id;
-  char     tag[MAX_TAG_LEN + 1]; // +1 for null terminator
-  int      pos_x, pos_y;
-  uint8_t *avatar;   // Byte array containing image pixels (RGBA32)
-  uint32_t w, h, ch; // Width, height and channel count
-  bool     connected;
-  /* time_t last_seen; // Not sure what this is for */
-  Texture2D tex; // Created from avatar
+  uint32_t  ip;
+  uint32_t  player_id;
+  char      nametag[MAX_TAG_LEN + 1]; // +1 for null terminator
+  int       pos_x, pos_y;
+  uint8_t  *avatar;   // Byte array containing image pixels (RGBA32)
+  uint32_t  w, h, ch; // Width, height and channel count
+  bool      connected;
+  time_t    last_seen; // When was this player last connected?
+  Texture2D tex;       // Created from avatar
   bool      tex_inited,
       tex_dirty; // Has avatar texture been initialized? / Has avatar texture been modified since initialization?
 } Player;
@@ -255,7 +267,200 @@ static bool set_player_avatar(Player        *target_player,
 // ==============================================================================
 
 // NOTE: Resume here!
-static bool handle_register(int cfd, uint32_t peer_ip_net);
+static bool handle_register(int cfd, uint32_t peer_ip_net)
+{
+  uint8_t opcode;
+
+  // Get opcode sent by client
+  if (recvall(cfd, &opcode, 1) <= 0)
+  {
+    return false;
+  }
+
+  // Ignore if received opcode isn't for this handler
+  if (opcode != OPC_REGISTER)
+  {
+    return false;
+  }
+
+  // Receive all registration info from the socket fd.
+  // Will be in big endian (network order)
+
+  // "be" = Big endian
+  // "av" = Avatar
+  uint16_t be_nametag_len;
+  if (recvall(cfd, &be_nametag_len, EXPECTED_NETWORK_ORDER_NAMETAG_LEN) <= 0)
+  {
+    return false;
+  }
+
+  uint32_t be_av_width;
+  if (recvall(cfd, &be_av_width, EXPECTED_NETWORK_ORDER_AVATAR_WIDTH) <= 0)
+  {
+    return false;
+  }
+
+  uint32_t be_av_height;
+  if (recvall(cfd, &be_av_height, EXPECTED_NETWORK_ORDER_AVATAR_HEIGHT) <= 0)
+  {
+    return false;
+  }
+
+  uint32_t be_av_size;
+  if (recvall(cfd, &be_av_size, EXPECTED_NETWORK_ORDER_AVATAR_SIZE) <= 0)
+  {
+    return false;
+  }
+
+  uint32_t be_av_channels;
+  if (recvall(cfd, &be_av_channels, EXPECTED_NETWORK_ORDER_AVATAR_CHANNELS) <= 0)
+  {
+    return false;
+  }
+
+  // Convert all to host order
+
+  uint32_t nametag_len = ntohs(be_nametag_len);
+  uint32_t av_width    = ntohs(be_av_width);
+  uint32_t av_height   = ntohs(be_av_height);
+  uint32_t av_size     = ntohs(be_av_size);
+  uint32_t av_channels = ntohs(be_av_channels);
+
+  // Ensure integrity
+
+  // Requested nametag's length is within bounds
+  if (nametag_len >= MAX_STR_LEN)
+  {
+    return false;
+  }
+
+  // Requested dimensions are in bounds
+  if (av_width == 0 || av_height == 0 || av_width > MAX_AVATAR_W ||
+      av_height > MAX_AVATAR_H)
+  {
+    return false;
+  }
+
+  // Avatar image is either grayscale, RGB, or RGBA
+  if (!(av_channels == GRAYSCALE_CHANNEL_COUNT || av_channels != RGB_CHANNEL_COUNT ||
+        av_channels != RGBA_CHANNEL_COUNT))
+  {
+    return false;
+  }
+
+  // Avatar image size coincides with its channel count and dimensions
+  if (av_size != av_width * av_height * av_channels)
+  {
+    return false;
+  }
+
+  // Allocate space for nametag and avatar
+
+  char *nametag_buf = (char *)malloc(nametag_len + 1);
+  if (!nametag_buf)
+  {
+    return false;
+  }
+
+  uint8_t *av_buf = (uint8_t *)malloc(av_size);
+  if (!av_buf)
+  {
+    free(nametag_buf);
+
+    return false;
+  }
+
+  // Now that we know what their sizes are, receive them
+
+  if (recvall(cfd, nametag_buf, nametag_len) <= 0)
+  {
+    free(nametag_buf);
+    free(av_buf);
+
+    return false;
+  }
+
+  if (recvall(cfd, av_buf, av_size) <= 0)
+  {
+    free(nametag_buf);
+    free(av_buf);
+
+    return false;
+  }
+
+  // Lock this thread in before actually doing reg
+  // This avoids fucking up the players table with async bullshit
+  pthread_mutex_lock(&g_lock);
+
+  // Register the player
+  Player *new_player = ensure_player(peer_ip_net);
+
+  // Exit if player registration failed
+  if (new_player == NULL)
+  {
+    pthread_mutex_unlock(&g_lock);
+
+    free(nametag_buf);
+    free(av_buf);
+
+    return false;
+  }
+
+  // Truncate given nametag if it exceeds our max length
+  size_t nametag_cpy_len = nametag_len;
+  if (nametag_cpy_len > MAX_NAMETAG_LEN)
+  {
+    nametag_cpy_len = MAX_NAMETAG_LEN;
+  }
+
+  memcpy(new_player->nametag, nametag_buf, nametag_cpy_len);
+
+  set_player_avatar(new_player, av_buf, av_width, av_height, av_channels);
+
+  new_player->connected = true;
+  new_player->last_seen = time(NULL); // NOTE: Pulling time in C! Neat
+
+  // Gather info for ACK
+  // Involves polling player table entry; this is why we don't unlock thread first)
+  uint32_t new_player_id    = new_player->player_id;
+  uint32_t new_player_pos_x = new_player->pos_x;
+  uint32_t new_player_pos_y = new_player->pos_y;
+
+  pthread_mutex_unlock(&g_lock);
+
+  // Structure and send the ACK packet
+
+  /* ACK packet structure:
+   *
+   * Opcode = 1 byte, offset 0
+   * Player ID = 4 bytes, offset 1-4
+   * Player pos X = 4 bytes, 5-8
+   * Player pos Y = 4 bytes, 8-11
+   *
+   */
+  uint8_t ack[ACK_OPCODE_SIZE + sizeof new_player_id + sizeof new_player_pos_x +
+              sizeof new_player_pos_y];
+
+  ack[0] = OPC_ACK;
+
+  // Must convert back to network order!
+  uint32_t be_new_player_id    = htonl(new_player_id);
+  uint32_t be_new_player_pos_x = htonl(new_player_pos_x);
+  uint32_t be_new_player_pos_y = htonl(new_player_pos_y);
+
+  // Assemble packet
+  memcpy(&ack[ACK_ID_OFFSET], &be_new_player_id, sizeof be_new_player_id);
+  memcpy(&ack[ACK_POS_X_OFFSET], &be_new_player_pos_x, sizeof be_new_player_pos_x);
+  memcpy(&ack[ACK_POS_Y_OFFSET], &be_new_player_pos_y, sizeof be_new_player_pos_y);
+
+  // Send over wire!
+  sendall(cfd, ack, sizeof ack);
+
+  free(nametag_buf);
+  free(av_buf);
+
+  return true;
+}
 
 // ==============================================================================
 // NETWORK THREAD
